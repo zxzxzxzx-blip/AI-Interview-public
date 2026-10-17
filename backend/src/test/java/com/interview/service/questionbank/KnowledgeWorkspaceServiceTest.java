@@ -1,0 +1,488 @@
+package com.interview.service.questionbank;
+
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.interview.config.QuestionBankAccessProperties;
+import com.interview.dto.QuestionBankCapabilitiesResponse;
+import com.interview.dto.MentorInsightResponse.KnowledgeCoverage.CategoryDetail;
+import com.interview.entity.InterviewPosition;
+import com.interview.entity.KnowledgeAtom;
+import com.interview.entity.KnowledgeBase;
+import com.interview.dto.questionbank.QuestionBankBulkAtomRequest;
+import com.interview.dto.questionbank.QuestionBankImportRequest;
+import com.interview.dto.questionbank.QuestionBankImportResult;
+import com.interview.mapper.AppJobMapper;
+import com.interview.mapper.InterviewPositionMapper;
+import com.interview.mapper.KnowledgeAtomMapper;
+import com.interview.mapper.KnowledgeAtomReviewMapper;
+import com.interview.mapper.KnowledgeAtomVersionMapper;
+import com.interview.mapper.KnowledgeBaseMapper;
+import com.interview.mapper.RagRetrievalLogMapper;
+import com.interview.service.AdminRoleService;
+import com.interview.service.questionbank.build.QuestionBankBuildService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+@DisplayName("KnowledgeWorkspaceService — 用户知识库工作台")
+class KnowledgeWorkspaceServiceTest {
+
+    private InterviewPositionMapper positionMapper;
+    private KnowledgeBaseMapper knowledgeBaseMapper;
+    private KnowledgeAtomMapper atomMapper;
+    private KnowledgeAtomVersionMapper versionMapper;
+    private KnowledgeAtomReviewMapper reviewMapper;
+    private AppJobMapper appJobMapper;
+    private AdminRoleService adminRoleService;
+    private QuestionBankService questionBankService;
+    private QdrantVectorService qdrantVectorService;
+    private RagRetrievalLogMapper ragLogMapper;
+    private QuestionBankAccessProperties accessProperties;
+    private QuestionBankBuildService questionBankBuildService;
+    private KnowledgeWorkspaceService service;
+
+    @BeforeEach
+    void setUp() {
+        positionMapper = mock(InterviewPositionMapper.class);
+        knowledgeBaseMapper = mock(KnowledgeBaseMapper.class);
+        atomMapper = mock(KnowledgeAtomMapper.class);
+        versionMapper = mock(KnowledgeAtomVersionMapper.class);
+        reviewMapper = mock(KnowledgeAtomReviewMapper.class);
+        appJobMapper = mock(AppJobMapper.class);
+        adminRoleService = mock(AdminRoleService.class);
+        questionBankService = mock(QuestionBankService.class);
+        qdrantVectorService = mock(QdrantVectorService.class);
+        ragLogMapper = mock(RagRetrievalLogMapper.class);
+        accessProperties = new QuestionBankAccessProperties();
+        accessProperties.setUserMaintenanceEnabled(true);
+        questionBankBuildService = mock(QuestionBankBuildService.class);
+        service = new KnowledgeWorkspaceService(positionMapper, knowledgeBaseMapper,
+                atomMapper, versionMapper, reviewMapper,
+                appJobMapper, adminRoleService, questionBankService, qdrantVectorService,
+                ragLogMapper, accessProperties, questionBankBuildService);
+    }
+
+    @Test
+    @DisplayName("岗位列表包含公开岗位和当前用户私有岗位，并带默认知识库和维护能力")
+    void shouldListPublicAndOwnedPrivatePositionsWithKnowledgeBaseCapabilities() {
+        InterviewPosition publicPosition = position(1L, "PUBLIC", null, "Java 后端开发", "ACTIVE", 11L);
+        InterviewPosition privatePosition = position(2L, "PRIVATE", 7L, "我的后端岗", "ACTIVE", 12L);
+        when(positionMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(publicPosition, privatePosition));
+        when(knowledgeBaseMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(
+                knowledgeBase(11L, 1L, "PUBLIC", null),
+                knowledgeBase(12L, 2L, "PRIVATE", 7L)
+        ));
+
+        KnowledgeWorkspaceResponse response = service.listWorkspace(7L);
+
+        assertThat(response.positions()).hasSize(2);
+        assertThat(response.positions().get(0).scope()).isEqualTo("PUBLIC");
+        assertThat(response.positions().get(0).editable()).isFalse();
+        assertThat(response.positions().get(0).canImportPackage()).isFalse();
+        assertThat(response.positions().get(0).canManageAtoms()).isFalse();
+        assertThat(response.positions().get(0).canBuildQuestionBank()).isFalse();
+        assertThat(response.positions().get(1).scope()).isEqualTo("PRIVATE");
+        assertThat(response.positions().get(1).editable()).isTrue();
+        assertThat(response.positions().get(1).canImportPackage()).isTrue();
+        assertThat(response.positions().get(1).canManageAtoms()).isTrue();
+        assertThat(response.positions().get(1).canBuildQuestionBank()).isTrue();
+        assertThat(response.positions().get(1).canArchiveAtoms()).isTrue();
+        assertThat(response.positions().get(1).canPublishAtoms()).isTrue();
+        assertThat(response.positions().get(1).canReindexAtoms()).isTrue();
+        assertThat(response.positions().get(1).knowledgeBase().id()).isEqualTo(12L);
+    }
+
+    @Test
+    @DisplayName("管理员可通过同一工作台维护公共题库")
+    void shouldExposePublicQuestionBankMaintenanceCapabilitiesForAdmin() {
+        accessProperties.setUserMaintenanceEnabled(false);
+        InterviewPosition publicPosition = position(1L, "PUBLIC", null, "Java 后端开发", "ACTIVE", 11L);
+        when(positionMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(publicPosition));
+        when(knowledgeBaseMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(
+                knowledgeBase(11L, 1L, "PUBLIC", null)
+        ));
+        when(adminRoleService.isAdmin(7L)).thenReturn(true);
+
+        KnowledgePositionResponse position = service.listWorkspace(7L).positions().get(0);
+
+        assertThat(position.scope()).isEqualTo("PUBLIC");
+        assertThat(position.editable()).isFalse();
+        assertThat(position.canImportPackage()).isTrue();
+        assertThat(position.canManageAtoms()).isTrue();
+        assertThat(position.canBuildQuestionBank()).isTrue();
+        assertThat(position.canArchiveAtoms()).isTrue();
+        assertThat(position.canPublishAtoms()).isTrue();
+        assertThat(position.canReindexAtoms()).isTrue();
+    }
+
+    @Test
+    @DisplayName("开放个人维护后管理员同时拥有公共题库权限和私有岗位新增能力")
+    void shouldGiveEveryAdminPublicAndOwnedPrivateMaintenanceWhenEnabled() {
+        accessProperties.setUserMaintenanceEnabled(true);
+        when(adminRoleService.isAdmin(8L)).thenReturn(true);
+        when(positionMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(
+                position(1L, "PUBLIC", null, "Java 后端开发", "ACTIVE", 11L),
+                position(2L, "PRIVATE", 8L, "管理员私有岗位", "ACTIVE", 12L),
+                position(3L, "PRIVATE", 9L, "其他管理员私有岗位", "ACTIVE", 13L)
+        ));
+        when(knowledgeBaseMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(
+                knowledgeBase(11L, 1L, "PUBLIC", null),
+                knowledgeBase(12L, 2L, "PRIVATE", 8L),
+                knowledgeBase(13L, 3L, "PRIVATE", 9L)
+        ));
+        doAnswer(invocation -> {
+            InterviewPosition position = invocation.getArgument(0);
+            position.setId(20L);
+            return 1;
+        }).when(positionMapper).insert(any(InterviewPosition.class));
+        doAnswer(invocation -> {
+            KnowledgeBase knowledgeBase = invocation.getArgument(0);
+            knowledgeBase.setId(30L);
+            return 1;
+        }).when(knowledgeBaseMapper).insert(any(KnowledgeBase.class));
+
+        KnowledgeWorkspaceResponse workspace = service.listWorkspace(8L);
+        KnowledgePositionResponse created = service.createPrivatePosition(8L,
+                new KnowledgePositionCreateRequest("算法工程师", "管理员自有岗位"));
+
+        assertThat(workspace.positions()).hasSize(2);
+        assertThat(workspace.positions().get(0).scope()).isEqualTo("PUBLIC");
+        assertThat(workspace.positions().get(0).canImportPackage()).isTrue();
+        assertThat(workspace.positions().get(1).scope()).isEqualTo("PRIVATE");
+        assertThat(workspace.positions().get(1).editable()).isTrue();
+        assertThat(created.scope()).isEqualTo("PRIVATE");
+        assertThat(created.ownerUserId()).isEqualTo(8L);
+    }
+
+    @Test
+    @DisplayName("开关关闭时管理员工作台只返回公共岗位")
+    void shouldOnlyExposePublicWorkspaceToAdminWhenDisabled() {
+        accessProperties.setUserMaintenanceEnabled(false);
+        when(adminRoleService.isAdmin(8L)).thenReturn(true);
+        when(positionMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(
+                position(1L, "PUBLIC", null, "Java 后端开发", "ACTIVE", 11L),
+                position(2L, "PRIVATE", 8L, "管理员私有岗位", "ACTIVE", 12L)
+        ));
+        when(knowledgeBaseMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(
+                knowledgeBase(11L, 1L, "PUBLIC", null),
+                knowledgeBase(12L, 2L, "PRIVATE", 8L)
+        ));
+
+        KnowledgeWorkspaceResponse response = service.listWorkspace(8L);
+
+        assertThat(response.positions())
+                .extracting(KnowledgePositionResponse::scope)
+                .containsExactly("PUBLIC");
+    }
+
+    @Test
+    @DisplayName("开关关闭时管理员不能创建或操作自己的私有题库")
+    void shouldDenyAdminOwnedPrivateMaintenanceWhenDisabled() {
+        accessProperties.setUserMaintenanceEnabled(false);
+        when(adminRoleService.isAdmin(8L)).thenReturn(true);
+        when(positionMapper.selectById(20L))
+                .thenReturn(position(20L, "PRIVATE", 8L, "管理员私有岗位", "ACTIVE", 30L));
+        when(knowledgeBaseMapper.selectById(30L))
+                .thenReturn(knowledgeBase(30L, 20L, "PRIVATE", 8L));
+
+        assertWorkspaceDenied(() -> service.createPrivatePosition(8L,
+                new KnowledgePositionCreateRequest("私有岗位", "")));
+        assertWorkspaceDenied(() -> service.deletePrivatePosition(8L, 20L));
+        assertThatThrownBy(() -> service.getPositionCoverage(8L, 20L))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权");
+        assertWorkspaceDenied(() -> service.importPackage(8L, 30L, new QuestionBankImportRequest()));
+
+        verify(positionMapper, never()).insert(any());
+        verify(positionMapper, never()).deleteById(any(Long.class));
+        verify(questionBankService, never()).importBatch(any(), any());
+    }
+
+    @Test
+    @DisplayName("默认关闭时普通用户无权访问工作台或执行任何题库写操作")
+    void shouldDenyWorkspaceAndAllMutationsForNormalUserWhenDisabled() {
+        accessProperties.setUserMaintenanceEnabled(false);
+        when(adminRoleService.isAdmin(7L)).thenReturn(false);
+        QuestionBankImportRequest importRequest = new QuestionBankImportRequest();
+        QuestionBankBulkAtomRequest bulkRequest = new QuestionBankBulkAtomRequest();
+        bulkRequest.setAtomIds(List.of("atom-1"));
+
+        assertWorkspaceDenied(() -> service.listWorkspace(7L));
+        assertWorkspaceDenied(() -> service.createPrivatePosition(7L,
+                new KnowledgePositionCreateRequest("私有岗位", "")));
+        assertWorkspaceDenied(() -> service.deletePrivatePosition(7L, 20L));
+        assertWorkspaceDenied(() -> service.previewImportPackage(7L, 30L, importRequest));
+        assertWorkspaceDenied(() -> service.importPackage(7L, 30L, importRequest));
+        assertWorkspaceDenied(() -> service.archiveAllAtoms(7L, 30L));
+        assertWorkspaceDenied(() -> service.publishAllDrafts(7L, 30L));
+        assertWorkspaceDenied(() -> service.archiveAtoms(7L, 30L, bulkRequest));
+        assertWorkspaceDenied(() -> service.publishAtoms(7L, 30L, bulkRequest));
+        assertWorkspaceDenied(() -> service.reindexAtoms(7L, 30L, bulkRequest));
+
+        verify(positionMapper, never()).insert(any());
+        verify(positionMapper, never()).deleteById(any(Long.class));
+        verify(knowledgeBaseMapper, never()).insert(any());
+        verify(questionBankService, never()).importBatch(any(), any());
+        verify(questionBankService, never()).archiveAll(any());
+        verify(questionBankService, never()).publishAllDrafts(any());
+    }
+
+    @Test
+    @DisplayName("能力状态区分默认关闭的普通用户、管理员和开关开启的普通用户")
+    void shouldReportQuestionBankCapabilities() {
+        accessProperties.setUserMaintenanceEnabled(false);
+        when(adminRoleService.isAdmin(7L)).thenReturn(false);
+        when(adminRoleService.isAdmin(8L)).thenReturn(true);
+
+        QuestionBankCapabilitiesResponse normalDisabled = service.getCapabilities(7L);
+        QuestionBankCapabilitiesResponse adminDisabled = service.getCapabilities(8L);
+        accessProperties.setUserMaintenanceEnabled(true);
+        QuestionBankCapabilitiesResponse normalEnabled = service.getCapabilities(7L);
+
+        assertThat(normalDisabled.userMaintenanceEnabled()).isFalse();
+        assertThat(normalDisabled.admin()).isFalse();
+        assertThat(normalDisabled.canAccessWorkspace()).isFalse();
+        assertThat(adminDisabled.userMaintenanceEnabled()).isFalse();
+        assertThat(adminDisabled.admin()).isTrue();
+        assertThat(adminDisabled.canAccessWorkspace()).isTrue();
+        assertThat(normalEnabled.userMaintenanceEnabled()).isTrue();
+        assertThat(normalEnabled.admin()).isFalse();
+        assertThat(normalEnabled.canAccessWorkspace()).isTrue();
+    }
+
+    @Test
+    @DisplayName("创建私有岗位时自动创建默认知识库")
+    void shouldCreatePrivatePositionWithDefaultKnowledgeBase() {
+        doAnswer(invocation -> {
+            InterviewPosition position = invocation.getArgument(0);
+            position.setId(20L);
+            return 1;
+        }).when(positionMapper).insert(any(InterviewPosition.class));
+        doAnswer(invocation -> {
+            KnowledgeBase knowledgeBase = invocation.getArgument(0);
+            knowledgeBase.setId(30L);
+            return 1;
+        }).when(knowledgeBaseMapper).insert(any(KnowledgeBase.class));
+        KnowledgePositionCreateRequest request = new KnowledgePositionCreateRequest("算法工程师", "机器学习面试");
+
+        KnowledgePositionResponse response = service.createPrivatePosition(7L, request);
+
+        assertThat(response.id()).isEqualTo(20L);
+        assertThat(response.scope()).isEqualTo("PRIVATE");
+        assertThat(response.editable()).isTrue();
+        assertThat(response.knowledgeBase().id()).isEqualTo(30L);
+        verify(positionMapper).updateById(any(InterviewPosition.class));
+    }
+
+    @Test
+    @DisplayName("岗位说明长度与前端输入限制保持一致")
+    void shouldRejectDescriptionLongerThanFrontendLimit() {
+        String tooLong = "a".repeat(301);
+
+        assertThatThrownBy(() -> service.createPrivatePosition(7L,
+                new KnowledgePositionCreateRequest("算法工程师", tooLong)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("岗位说明不能超过 300 个字符");
+
+        verify(positionMapper, never()).insert(any());
+    }
+
+    @Test
+    @DisplayName("普通用户只能删除自己的私有岗位")
+    void shouldDeleteOwnedPrivatePositionOnly() {
+        InterviewPosition position = position(20L, "PRIVATE", 7L, "我的岗位", "ACTIVE", 30L);
+        when(positionMapper.selectById(20L)).thenReturn(position);
+        when(atomMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of());
+
+        service.deletePrivatePosition(7L, 20L);
+
+        verify(positionMapper).deleteById(20L);
+        verify(questionBankBuildService).deleteForPosition(7L, 20L);
+    }
+
+    @Test
+    @DisplayName("不能删除公开岗位或他人的私有岗位")
+    void shouldRejectDeletingPublicOrOtherUsersPosition() {
+        when(positionMapper.selectById(1L)).thenReturn(position(1L, "PUBLIC", null, "Java 后端开发", "ACTIVE", 11L));
+        when(positionMapper.selectById(2L)).thenReturn(position(2L, "PRIVATE", 8L, "他人的岗位", "ACTIVE", 12L));
+
+        assertThatThrownBy(() -> service.deletePrivatePosition(7L, 1L))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权访问");
+        assertThatThrownBy(() -> service.deletePrivatePosition(7L, 2L))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权访问");
+
+        verify(positionMapper, never()).deleteById(any(Long.class));
+    }
+
+    @Test
+    @DisplayName("当前用户可将导入包导入自己的私有知识库草稿")
+    void shouldImportPackageIntoOwnedPrivateKnowledgeBaseAsDraft() {
+        KnowledgeBase knowledgeBase = knowledgeBase(30L, 20L, "PRIVATE", 7L);
+        when(knowledgeBaseMapper.selectById(30L)).thenReturn(knowledgeBase);
+        QuestionBankImportRequest request = new QuestionBankImportRequest();
+        request.setMode("AUTO_PUBLISH");
+        when(questionBankService.importBatch(any(), any())).thenReturn(QuestionBankImportResult.builder()
+                .batchId("qb-private")
+                .mode("DRAFT")
+                .received(1)
+                .imported(1)
+                .build());
+
+        QuestionBankImportResult result = service.importPackage(7L, 30L, request);
+
+        assertThat(result.getMode()).isEqualTo("DRAFT");
+        ArgumentCaptor<QuestionBankImportScope> scopeCaptor = ArgumentCaptor.forClass(QuestionBankImportScope.class);
+        verify(questionBankService).importBatch(any(QuestionBankImportRequest.class), scopeCaptor.capture());
+        assertThat(scopeCaptor.getValue().scope()).isEqualTo("PRIVATE");
+        assertThat(scopeCaptor.getValue().ownerUserId()).isEqualTo(7L);
+        assertThat(scopeCaptor.getValue().positionId()).isEqualTo(20L);
+        assertThat(scopeCaptor.getValue().knowledgeBaseId()).isEqualTo(30L);
+        assertThat(scopeCaptor.getValue().allowAutoPublish()).isFalse();
+    }
+
+    @Test
+    @DisplayName("原子详情只允许当前私有知识库 owner 读取")
+    void shouldScopeAtomDetailToKnowledgeBaseOwner() {
+        KnowledgeBase knowledgeBase = knowledgeBase(30L, 20L, "PRIVATE", 7L);
+        KnowledgeAtom atom = new KnowledgeAtom();
+        atom.setId(5L);
+        atom.setAtomId("kb30-java-001");
+        atom.setScope("PRIVATE");
+        atom.setOwnerUserId(7L);
+        atom.setPositionId(20L);
+        atom.setKnowledgeBaseId(30L);
+        when(knowledgeBaseMapper.selectById(30L)).thenReturn(knowledgeBase);
+        when(questionBankService.getAtom(any(), any())).thenReturn(atom);
+
+        assertThat(service.getAtom(7L, 30L, 5L).id()).isEqualTo(5L);
+        verify(questionBankService).getAtom(5L, new QuestionBankImportScope(
+                "PRIVATE", 7L, 20L, 30L, 7L, false));
+
+        when(adminRoleService.isAdmin(8L)).thenReturn(true);
+        assertThatThrownBy(() -> service.getAtom(8L, 30L, 5L))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权访问知识库");
+    }
+
+    @Test
+    @DisplayName("普通用户不能向公共知识库导入题库包")
+    void shouldRejectPackageImportIntoPublicKnowledgeBaseForNormalUser() {
+        KnowledgeBase knowledgeBase = knowledgeBase(11L, 1L, "PUBLIC", null);
+        when(knowledgeBaseMapper.selectById(11L)).thenReturn(knowledgeBase);
+        when(adminRoleService.isAdmin(7L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.importPackage(7L, 11L, new QuestionBankImportRequest()))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权访问知识库");
+
+        verify(questionBankService, never()).importBatch(any(), any());
+    }
+
+    @Test
+    @DisplayName("开关关闭时管理员仍可导入公共题库，但无权访问他人私有题库")
+    void shouldAllowAdminPublicMaintenanceWithoutGrantingOtherPrivateAccess() {
+        accessProperties.setUserMaintenanceEnabled(false);
+        when(adminRoleService.isAdmin(8L)).thenReturn(true);
+        when(knowledgeBaseMapper.selectById(11L))
+                .thenReturn(knowledgeBase(11L, 1L, "PUBLIC", null));
+        when(knowledgeBaseMapper.selectById(31L))
+                .thenReturn(knowledgeBase(31L, 21L, "PRIVATE", 9L));
+        when(questionBankService.importBatch(any(), any())).thenReturn(QuestionBankImportResult.builder()
+                .batchId("qb-public")
+                .mode("DRAFT")
+                .imported(1)
+                .build());
+
+        QuestionBankImportResult result = service.importPackage(8L, 11L, new QuestionBankImportRequest());
+
+        assertThat(result.getBatchId()).isEqualTo("qb-public");
+        assertThatThrownBy(() -> service.importPackage(8L, 31L, new QuestionBankImportRequest()))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权访问知识库");
+    }
+
+    @Test
+    @DisplayName("当前用户可查看自己私有岗位的覆盖结构，未命中分类保留 covered 为 0")
+    void shouldReturnCoverageForOwnedPrivatePositionWithZeroHits() {
+        when(positionMapper.selectById(20L)).thenReturn(position(20L, "PRIVATE", 7L, "我的岗位", "ACTIVE", 30L));
+        when(atomMapper.selectMaps(any(QueryWrapper.class))).thenReturn(List.of(
+                totalRow("Java", 4),
+                totalRow("数据库", 2)
+        ));
+        when(ragLogMapper.selectMaps(any(QueryWrapper.class))).thenReturn(List.of());
+
+        var coverage = service.getPositionCoverage(7L, 20L);
+
+        assertThat(coverage.getTotalCategories()).isEqualTo(2);
+        assertThat(coverage.getCoveredCategories()).isZero();
+        assertThat(coverage.getCoveragePercent()).isEqualTo(0.0);
+        assertThat(coverage.getDetails())
+                .extracting(CategoryDetail::getCovered)
+                .containsExactly(0, 0);
+    }
+
+    @Test
+    @DisplayName("普通用户不能通过工作台 coverage 端点查看公共岗位")
+    void shouldRejectPublicCoverageForNormalUser() {
+        when(positionMapper.selectById(1L)).thenReturn(position(1L, "PUBLIC", null, "Java 后端开发", "ACTIVE", 11L));
+        when(adminRoleService.isAdmin(7L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.getPositionCoverage(7L, 1L))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权查看");
+
+        verify(atomMapper, never()).selectMaps(any());
+        verify(ragLogMapper, never()).selectMaps(any());
+    }
+
+    private InterviewPosition position(Long id, String scope, Long ownerUserId, String name, String status, Long defaultKnowledgeBaseId) {
+        InterviewPosition position = new InterviewPosition();
+        position.setId(id);
+        position.setScope(scope);
+        position.setOwnerUserId(ownerUserId);
+        position.setName(name);
+        position.setStatus(status);
+        position.setDefaultKnowledgeBaseId(defaultKnowledgeBaseId);
+        return position;
+    }
+
+    private KnowledgeBase knowledgeBase(Long id, Long positionId, String scope, Long ownerUserId) {
+        KnowledgeBase knowledgeBase = new KnowledgeBase();
+        knowledgeBase.setId(id);
+        knowledgeBase.setPositionId(positionId);
+        knowledgeBase.setScope(scope);
+        knowledgeBase.setOwnerUserId(ownerUserId);
+        knowledgeBase.setName("默认知识库");
+        knowledgeBase.setStatus("ACTIVE");
+        return knowledgeBase;
+    }
+
+    private Map<String, Object> totalRow(String category, int total) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("category", category);
+        row.put("total", total);
+        return row;
+    }
+
+    private void assertWorkspaceDenied(org.assertj.core.api.ThrowableAssert.ThrowingCallable callable) {
+        assertThatThrownBy(callable)
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("无权访问");
+    }
+
+}

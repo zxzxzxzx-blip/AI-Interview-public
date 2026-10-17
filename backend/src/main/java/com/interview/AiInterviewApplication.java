@@ -1,0 +1,50 @@
+package com.interview;
+
+import io.github.cdimascio.dotenv.Dotenv;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.context.annotation.Bean;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+@SpringBootApplication
+@ConfigurationPropertiesScan
+@EnableScheduling
+public class AiInterviewApplication {
+    public static void main(String[] args) {
+        // 本地开发时自动加载项目根目录 .env 到系统属性，Docker 环境跳过
+        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
+        dotenv.entries().forEach(e -> {
+            if (System.getProperty(e.getKey()) == null) {
+                System.setProperty(e.getKey(), e.getValue());
+            }
+        });
+        SpringApplication.run(AiInterviewApplication.class, args);
+        System.out.println("====== AI Interview Backend Started ======");
+    }
+
+    @Value("${app.upload-dir:uploads}")
+    private String uploadDir;
+
+    @Bean
+    public WebMvcConfigurer avatarStaticResourceConfigurer() {
+        return new WebMvcConfigurer() {
+            @Override
+            public void addResourceHandlers(ResourceHandlerRegistry registry) {
+                Path path = Paths.get(uploadDir);
+                if (!path.isAbsolute()) {
+                    path = Paths.get(System.getProperty("user.dir")).resolve(path);
+                }
+                String location = "file:" + path.toAbsolutePath().normalize().toString().replace("\\", "/") + "/";
+                registry.addResourceHandler("/uploads/**")
+                        .addResourceLocations(location);
+            }
+        };
+    }
+}

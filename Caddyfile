@@ -1,0 +1,21 @@
+{
+    auto_https disable_redirects
+}
+
+:80 {
+    handle {
+        reverse_proxy frontend:80 {
+            flush_interval -1
+        }
+    }
+}
+
+https://{$DOMAIN_NAME} {
+    encode zstd gzip
+
+    handle {
+        reverse_proxy frontend:80 {
+            flush_interval -1
+        }
+    }
+}

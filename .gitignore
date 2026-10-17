@@ -1,0 +1,182 @@
+# ========== 通用IDE忽略规则 ==========
+# IntelliJ IDEA
+/out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+.idea/
+**/.idea/
+*.iml
+.kotlin
+
+# Eclipse
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache
+/bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# VS Code
+.vscode/
+
+# ========== 系统/环境忽略 ==========
+# Mac OS
+.DS_Store
+
+# Windows
+Thumbs.db
+*.tmp
+
+# ========== 环境变量与敏感配置 (重要：绝不提交) ==========
+.env
+.env.*
+!.env.example
+!.env.prod.example
+docker-compose.yml
+!docker-compose.example.yml
+**/application.yml
+!**/application.yml.example
+!backend/src/main/resources/application.yml
+
+# ========== JavaEE 项目核心忽略 ==========
+# 编译产物
+**/target/
+*.class
+*.war
+*.ear
+*.jar
+!**/WEB-INF/lib/*.jar
+
+# 依赖包
+/lib/
+!**/WEB-INF/lib/
+node_modules/
+.m2repo/
+.m2repo*/
+__pycache__/
+**/__pycache__/
+
+# 构建输出
+dist/
+build_err.txt
+
+# 日志文件
+*.log
+/logs/
+/temp/
+
+# 敏感配置文件（不上传）
+application.properties
+application-dev.yml
+application-prod.yml
+
+# 配置模板（保留，方便协作）
+!application-template.properties
+
+# ========== 数据库与持久化数据 (重要：绝不提交) ==========
+/mysql_data/
+/mysql_data_80*/
+/mysql_data_backup_57_*/
+/redis_data/
+/qdrant_data/
+/embedding_model_cache/
+/interwise_embedding_model_cache.tgz
+/document/
+/backups/
+
+# ========== 临时/测试文件 ==========
+测试简历.pdf
+docker使用说明.txt
+branches.txt
+conflicts.txt
+conflicts_render.txt
+
+# ========== Claude Code 本地配置 ==========
+.claude/
+.worktrees/
+.codegraph/
+.understand-anything/
+
+# ========== 知识库相关 ==========
+# 忽略原始大型文档，保留导入契约 fixtures
+*.pdf
+**/knowledge_base/archive_original/
+/question_bank_imports/*
+!/question_bank_imports/fixtures/
+!/question_bank_imports/fixtures/import-lifecycle/
+!/question_bank_imports/fixtures/import-lifecycle/*.json
+
+配置变量.txt
+/DEPLOYMENT.md
+/AZURE_OPERATIONS.md
+
+# ========== Docs ==========
+/docs/*
+!/docs/
+!/docs/rag-chain-summary.md
+!/docs/贡献指南.md
+!/docs/goai-demo.md
+!/docs/plan/
+!/docs/adr/
+!/docs/adr/*.md
+!/docs/agents/
+!/docs/agents/*.md
+!/docs/agents/plans/
+!/docs/agents/plans/**/*.md
+!/docs/agents/templates/
+!/docs/agents/templates/*.md
+!/docs/agents/runs/
+!/docs/agents/runs/*.md
+!/docs/contracts/
+!/docs/contracts/*.md
+!/docs/superpowers/
+!/docs/specs
+!/docs/superpowers/specs/
+!/docs/superpowers/specs/*.md
+!/docs/superpowers/plans/
+!/docs/superpowers/plans/*.md
+# Local resume/interview-prep drafts generated for private delivery preparation
+/docs/codex-resume-ai-llm-20260511/
+/docs/AI大模型应用开发简历模板.md
+/docs/AI大模型应用开发项目面试准备.md
+/docs/AI大模型应用开发简历模板.docx
+/docs/AI大模型应用开发项目面试准备.docx
+/docs/AI大模型应用开发简历与面试准备.docx
+/uploads/
+backend/uploads/
+**/uploads/
+backend/mvn_result.txt
+.superpowers/
+.superpower/
+
+# Demo video local artifacts
+/demo-video/
+/docs/demo-video-*.md
+
+# Source screen recordings are local-only; the README uses GitHub attachments.
+/image/视频/
+
+# Retrieval evaluation raw and generated artifacts
+/output/retrieval-eval/
+/.cache/retrieval-eval/
+/scripts/retrieval_eval/.env
+
+# Workflow
+/docs/generic-agent-workflow
+
+# Uploaded question bank
+/knowledge_storage/
+
+# Others
+/.codex-tmp

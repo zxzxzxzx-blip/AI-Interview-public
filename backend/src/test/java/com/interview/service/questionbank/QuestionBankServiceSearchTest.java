@@ -1,0 +1,283 @@
+package com.interview.service.questionbank;
+
+import com.interview.config.PositionCategoryConfig;
+import com.interview.dto.questionbank.QuestionBankSearchRequest;
+import com.interview.dto.questionbank.QuestionBankSearchResponse;
+import com.interview.entity.KnowledgeAtom;
+import com.interview.mapper.KnowledgeAtomImportBatchMapper;
+import com.interview.mapper.KnowledgeAtomMapper;
+import com.interview.mapper.KnowledgeAtomVersionMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+@DisplayName("QuestionBankService search")
+@ExtendWith(MockitoExtension.class)
+class QuestionBankServiceSearchTest {
+
+    @Mock
+    private KnowledgeAtomMapper atomMapper;
+
+    @Mock
+    private KnowledgeAtomVersionMapper versionMapper;
+
+    @Mock
+    private KnowledgeAtomImportBatchMapper batchMapper;
+
+    @Mock
+    private PositionCategoryConfig categoryConfig;
+
+    @Mock
+    private QdrantVectorService qdrantVectorService;
+
+    private QuestionBankService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new QuestionBankService(atomMapper, versionMapper, batchMapper, categoryConfig, qdrantVectorService);
+    }
+
+    @Test
+    @DisplayName("returns QDRANT_VECTOR when a vector hit loads a published atom")
+    void shouldReturnQdrantVectorStrategy() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        KnowledgeAtom atom = publishedAtom("java-hashmap");
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any()))
+                .thenReturn(List.of(new QdrantVectorService.VectorHit(atom.getAtomId(), 0.91)));
+        when(atomMapper.selectList(any())).thenReturn(List.of(atom));
+
+        QuestionBankSearchResponse response = service.searchWithMetadata(request);
+
+        assertThat(response.getStrategy()).isEqualTo("QDRANT_VECTOR");
+        assertThat(response.getResults())
+                .extracting(result -> result.getAtomId())
+                .containsExactly(atom.getAtomId());
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom>> captor =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper.class);
+        verify(atomMapper).selectList(captor.capture());
+        assertRetrievalGate(captor.getValue());
+    }
+
+    @Test
+    @DisplayName("returns MYSQL_FALLBACK when no usable vector hit exists")
+    void shouldReturnMysqlFallbackStrategy() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        QuestionBankSearchResponse response = service.searchWithMetadata(request);
+
+        assertThat(response.getStrategy()).isEqualTo("MYSQL_FALLBACK");
+        assertThat(response.getResults()).isEmpty();
+        verify(atomMapper).selectList(any());
+    }
+
+    @Test
+    @DisplayName("marks MySQL fallback as degraded when Qdrant is unavailable")
+    void shouldMarkFallbackAsDegradedWhenQdrantFails() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("Qdrant unavailable"));
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+        AtomicReference<QuestionBankSearchResponse> response = new AtomicReference<>();
+
+        assertThatCode(() -> response.set(service.searchWithMetadata(request))).doesNotThrowAnyException();
+
+        assertThat(response.get().getStrategy()).isEqualTo("MYSQL_FALLBACK_DEGRADED");
+        assertThat(response.get().getResults()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("allows vector search to retrieve thirty candidates")
+    void shouldAllowVectorSearchLimitAtThirty() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        request.setLimit(30);
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        service.searchWithMetadata(request);
+
+        ArgumentCaptor<Integer> limitCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(qdrantVectorService).search(any(), any(), any(), limitCaptor.capture(), any(), any(), any(), any());
+        assertThat(limitCaptor.getValue()).isEqualTo(30);
+    }
+
+    @Test
+    @DisplayName("caps vector search limit at thirty candidates")
+    void shouldCapVectorSearchLimitAtThirty() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        request.setLimit(50);
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        service.searchWithMetadata(request);
+
+        ArgumentCaptor<Integer> limitCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(qdrantVectorService).search(any(), any(), any(), limitCaptor.capture(), any(), any(), any(), any());
+        assertThat(limitCaptor.getValue()).isEqualTo(30);
+    }
+
+    @Test
+    @DisplayName("returns MYSQL_FALLBACK when Qdrant contains a stale atom ID")
+    void shouldFallbackWhenQdrantReturnsStaleAtomId() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any()))
+                .thenReturn(List.of(new QdrantVectorService.VectorHit("stale-atom", 0.91)));
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        QuestionBankSearchResponse response = service.searchWithMetadata(request);
+
+        assertThat(response.getStrategy()).isEqualTo("MYSQL_FALLBACK");
+        assertThat(response.getResults()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("fallback search uses query terms instead of the complete conversation")
+    void shouldUseTermsForMysqlFallback() {
+        QuestionBankSearchRequest request = request("请解释 RAG 的基本流程，向量数据库负责相似度检索");
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        service.searchWithMetadata(request);
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom>> captor =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper.class);
+        verify(atomMapper).selectList(captor.capture());
+        com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom> wrapper = captor.getValue();
+        wrapper.getSqlSegment();
+        assertRetrievalGate(wrapper);
+        assertThat(wrapper.getParamNameValuePairs().values())
+                .contains("%RAG%")
+                .doesNotContain("%" + request.getQuery() + "%");
+    }
+
+    @Test
+    @DisplayName("passes position scope to vector search and fallback query")
+    void shouldApplyPositionScopeToVectorAndFallbackSearch() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        request.setScope("PRIVATE");
+        request.setOwnerUserId(1L);
+        request.setPositionId(20L);
+        request.setKnowledgeBaseId(30L);
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        service.searchWithMetadata(request);
+
+        ArgumentCaptor<String> scopeCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Long> ownerCaptor = ArgumentCaptor.forClass(Long.class);
+        ArgumentCaptor<Long> positionCaptor = ArgumentCaptor.forClass(Long.class);
+        ArgumentCaptor<Long> knowledgeBaseCaptor = ArgumentCaptor.forClass(Long.class);
+        verify(qdrantVectorService).search(any(), any(), any(), anyInt(),
+                scopeCaptor.capture(), ownerCaptor.capture(), positionCaptor.capture(), knowledgeBaseCaptor.capture());
+        assertThat(scopeCaptor.getValue()).isEqualTo("PRIVATE");
+        assertThat(ownerCaptor.getValue()).isEqualTo(1L);
+        assertThat(positionCaptor.getValue()).isEqualTo(20L);
+        assertThat(knowledgeBaseCaptor.getValue()).isEqualTo(30L);
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom>> captor =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper.class);
+        verify(atomMapper).selectList(captor.capture());
+        com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom> wrapper = captor.getValue();
+        wrapper.getSqlSegment();
+        assertThat(wrapper.getParamNameValuePairs().values()).contains("PRIVATE", 1L, 20L, 30L);
+    }
+
+    @Test
+    @DisplayName("public fallback search requires owner_user_id to be null")
+    void shouldRequireNullOwnerForPublicMysqlFallbackSearch() {
+        QuestionBankSearchRequest request = request("HashMap collision handling");
+        request.setScope("PUBLIC");
+        request.setPositionId(20L);
+        request.setKnowledgeBaseId(30L);
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        service.searchWithMetadata(request);
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom>> captor =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.QueryWrapper.class);
+        verify(atomMapper).selectList(captor.capture());
+        String sqlSegment = captor.getValue().getSqlSegment();
+        assertThat(sqlSegment).containsIgnoringCase("owner_user_id IS NULL");
+        assertThat(captor.getValue().getParamNameValuePairs().values()).contains("PUBLIC", 20L, 30L);
+    }
+
+    @Test
+    @DisplayName("structured scoped search does not require legacy position category mapping")
+    void shouldNotRequireLegacyCategoryMappingForStructuredScopeSearch() {
+        QuestionBankSearchRequest request = request("Linux disk full troubleshooting");
+        request.setPosition("系统运维");
+        request.setScope("PRIVATE");
+        request.setOwnerUserId(1L);
+        request.setPositionId(15L);
+        request.setKnowledgeBaseId(15L);
+        when(qdrantVectorService.search(any(), any(), any(), anyInt(), any(), any(), any(), any())).thenReturn(List.of());
+        when(atomMapper.selectList(any())).thenReturn(List.of());
+
+        QuestionBankSearchResponse response = service.searchWithMetadata(request);
+
+        assertThat(response.getStrategy()).isEqualTo("MYSQL_FALLBACK");
+        ArgumentCaptor<List<String>> categoriesCaptor = ArgumentCaptor.forClass(List.class);
+        verify(qdrantVectorService).search(any(), categoriesCaptor.capture(), any(), anyInt(), any(), any(), any(), any());
+        assertThat(categoriesCaptor.getValue()).isEmpty();
+        verifyNoInteractions(categoryConfig);
+    }
+
+    @Test
+    @DisplayName("returns SKIPPED for a short query")
+    void shouldSkipShortQuery() {
+        QuestionBankSearchResponse response = service.searchWithMetadata(request("ab"));
+
+        assertThat(response.getStrategy()).isEqualTo("SKIPPED");
+        assertThat(response.getResults()).isEmpty();
+        verifyNoInteractions(atomMapper, categoryConfig, qdrantVectorService);
+    }
+
+    private QuestionBankSearchRequest request(String query) {
+        QuestionBankSearchRequest request = new QuestionBankSearchRequest();
+        request.setQuery(query);
+        return request;
+    }
+
+    private KnowledgeAtom publishedAtom(String atomId) {
+        KnowledgeAtom atom = new KnowledgeAtom();
+        atom.setAtomId(atomId);
+        atom.setSubject("HashMap");
+        atom.setCategory("JAVA");
+        atom.setDifficulty("MEDIUM");
+        atom.setPrinciples("Uses buckets and resolves collisions.");
+        atom.setStatus(QuestionBankService.STATUS_PUBLISHED);
+        atom.setPublicationStatus(QuestionBankService.STATUS_PUBLISHED);
+        atom.setReviewStatus("PASS");
+        atom.setVectorStatus("SYNCED");
+        return atom;
+    }
+
+    private void assertRetrievalGate(
+            com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<KnowledgeAtom> wrapper) {
+        String sqlSegment = wrapper.getSqlSegment();
+        assertThat(sqlSegment)
+                .containsIgnoringCase("status")
+                .containsIgnoringCase("publication_status")
+                .containsIgnoringCase("review_status")
+                .containsIgnoringCase("vector_status");
+        assertThat(wrapper.getParamNameValuePairs().values())
+                .contains(QuestionBankService.STATUS_PUBLISHED, "PASS", "SYNCED");
+    }
+}

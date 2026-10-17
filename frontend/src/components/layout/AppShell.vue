@@ -1,0 +1,535 @@
+<script setup>
+import { computed, provide, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import {
+  ChatLineRound,
+  DataAnalysis,
+  Document,
+  Monitor,
+  Operation,
+  Setting,
+  UserFilled,
+  MagicStick
+} from '@element-plus/icons-vue'
+import { submitFeedbackAPI } from '@/api/analytics'
+import { getLlmConfigStatusAPI } from '@/api/llm'
+import { useKnowledgeWorkspaceAccess } from '@/composables/useKnowledgeWorkspaceAccess'
+import {
+  buildLlmConfigRouteQuery,
+  createUnknownLlmConfigStatus,
+  normalizeLlmConfigStatus
+} from '@/utils/llmConfig'
+import {
+  getKnowledgeWorkspaceNavLabel,
+  KNOWLEDGE_WORKSPACE_CAPABILITIES_KEY,
+  shouldShowKnowledgeWorkspace
+} from '@/utils/knowledgeWorkspace'
+
+const route = useRoute()
+const router = useRouter()
+const baseNavItems = [
+  { path: '/', label: '工作台', icon: Monitor },
+  { path: '/interview/setup', label: '面试准备', icon: MagicStick },
+  { path: '/llm-providers', label: '大模型配置', icon: Operation },
+  { path: '/knowledge-workspace', label: '岗位 / 题库维护', icon: Document, workspace: true },
+  { path: '/mentor', label: 'AI Mentor', icon: DataAnalysis },
+  { path: '/resume', label: '简历画像', icon: UserFilled },
+  { path: '/history', label: '历史报告', icon: Document },
+  { path: '/settings', label: '设置', icon: Setting }
+]
+
+const feedbackVisible = ref(false)
+const feedbackLoading = ref(false)
+const llmStatus = ref(createUnknownLlmConfigStatus())
+const {
+  workspaceCapabilities,
+  workspaceCapabilitiesResolved,
+  workspaceCapabilitiesFailed,
+  loadWorkspaceCapabilities
+} = useKnowledgeWorkspaceAccess()
+provide(KNOWLEDGE_WORKSPACE_CAPABILITIES_KEY, workspaceCapabilities)
+const navItems = computed(() => baseNavItems.flatMap((item) => {
+  if (!item.workspace) return [item]
+  if (!shouldShowKnowledgeWorkspace(workspaceCapabilities.value)) return []
+  return [{
+    ...item,
+    label: getKnowledgeWorkspaceNavLabel(workspaceCapabilities.value)
+  }]
+}))
+const currentTitle = computed(() => {
+  if (route.path === '/knowledge-workspace') {
+    return getKnowledgeWorkspaceNavLabel(workspaceCapabilities.value)
+  }
+  return route.meta?.title || '工作台'
+})
+const canRenderCurrentRoute = computed(() => {
+  if (route.path !== '/knowledge-workspace') return true
+  return workspaceCapabilitiesResolved.value
+    && shouldShowKnowledgeWorkspace(workspaceCapabilities.value)
+})
+const feedbackForm = reactive({
+  category: 'bug',
+  content: '',
+  contact: ''
+})
+const showLlmWarning = computed(() => llmStatus.value.resolved && !llmStatus.value.hasActiveConfig)
+const sidebarStatusText = computed(() => {
+  if (showLlmWarning.value) {
+    return '未启用大模型配置'
+  }
+  if (llmStatus.value.resolved && llmStatus.value.hasActiveConfig) {
+    return llmStatus.value.activeDisplayName || llmStatus.value.activeProvider || '大模型已就绪'
+  }
+  return '服务运行正常'
+})
+
+const isActive = (path) => {
+  return route.path === path
+}
+
+const navigate = (path) => {
+  if (route.path !== path) {
+    router.push(path)
+  }
+}
+
+const submitFeedback = async () => {
+  if (!feedbackForm.content.trim()) {
+    ElMessage.warning('请先填写反馈内容')
+    return
+  }
+  feedbackLoading.value = true
+  try {
+    await submitFeedbackAPI({
+      ...feedbackForm,
+      pageUrl: route.fullPath
+    })
+    ElMessage.success('反馈已收到')
+    feedbackForm.content = ''
+    feedbackVisible.value = false
+  } finally {
+    feedbackLoading.value = false
+  }
+}
+
+const openLlmSettings = () => {
+  router.push({
+    path: '/llm-providers',
+    query: buildLlmConfigRouteQuery('dashboard')
+  })
+}
+
+const loadLlmStatus = async () => {
+  try {
+    const data = await getLlmConfigStatusAPI({ silent: true })
+    llmStatus.value = normalizeLlmConfigStatus(data)
+  } catch {
+    llmStatus.value = createUnknownLlmConfigStatus()
+  }
+}
+
+const enforceWorkspaceAccess = async () => {
+  await loadWorkspaceCapabilities()
+  if (route.path !== '/knowledge-workspace') return
+  if (shouldShowKnowledgeWorkspace(workspaceCapabilities.value)) return
+
+  ElMessage.warning(workspaceCapabilitiesFailed.value
+    ? '题库维护权限校验失败，请刷新页面后重试'
+    : '当前版本暂未开放个人题库维护')
+  await router.replace('/')
+}
+
+watch(
+  () => route.fullPath,
+  () => {
+    loadLlmStatus()
+    enforceWorkspaceAccess()
+  },
+  { immediate: true }
+)
+</script>
+
+<template>
+  <div class="app-shell">
+    <aside class="app-shell__sidebar">
+      <button class="app-shell__brand" type="button" @click="navigate('/')">
+        <div class="app-shell__brand-mark">I</div>
+        <div class="app-shell__brand-copy">
+          <div class="app-shell__brand-name">InterWise</div>
+          <div class="app-shell__brand-subtitle">AI 面试练习工作台</div>
+        </div>
+      </button>
+
+      <nav class="app-shell__nav" aria-label="Primary">
+        <button
+          v-for="item in navItems"
+          :key="item.path"
+          class="app-shell__nav-item"
+          :class="{ 'is-active': isActive(item.path) }"
+          type="button"
+          :aria-current="isActive(item.path) ? 'page' : undefined"
+          @click="navigate(item.path)"
+        >
+          <el-icon class="app-shell__nav-icon">
+            <component :is="item.icon" />
+          </el-icon>
+          <span class="app-shell__nav-label">{{ item.label }}</span>
+        </button>
+      </nav>
+
+      <div class="app-shell__sidebar-footer" :class="{ 'is-warning': showLlmWarning }">
+        <div class="app-shell__status-dot" />
+        <span>{{ sidebarStatusText }}</span>
+        <button v-if="showLlmWarning" type="button" class="app-shell__sidebar-link" @click="openLlmSettings">
+          去配置
+        </button>
+      </div>
+    </aside>
+
+    <div class="app-shell__main">
+      <header class="app-shell__topbar">
+        <div class="app-shell__title-block">
+          <p class="app-shell__eyebrow">InterWise</p>
+          <h1 class="app-shell__title">{{ currentTitle }}</h1>
+        </div>
+
+        <div class="app-shell__actions">
+          <el-button type="primary" :icon="MagicStick" @click="navigate('/interview/setup')">
+            开始练习
+          </el-button>
+          <el-button :icon="ChatLineRound" @click="feedbackVisible = true">反馈</el-button>
+          <el-button :icon="Setting" @click="navigate('/settings')">设置</el-button>
+        </div>
+      </header>
+
+      <main class="app-shell__content">
+        <slot v-if="canRenderCurrentRoute" />
+        <div v-else class="app-shell__access-check" aria-label="正在检查题库维护权限">
+          <el-skeleton :rows="4" animated />
+        </div>
+      </main>
+    </div>
+
+    <el-dialog
+      v-model="feedbackVisible"
+      title="提交反馈"
+      width="min(92vw, 560px)"
+      :close-on-click-modal="false"
+    >
+      <div class="feedback-form">
+        <el-segmented
+          v-model="feedbackForm.category"
+          :options="[
+            { label: '问题', value: 'bug' },
+            { label: '建议', value: 'suggestion' },
+            { label: '体验', value: 'experience' }
+          ]"
+        />
+        <el-input
+          v-model="feedbackForm.content"
+          type="textarea"
+          :rows="5"
+          maxlength="2000"
+          show-word-limit
+          placeholder="描述你遇到的问题、期待的能力或页面体验"
+        />
+        <el-input
+          v-model="feedbackForm.contact"
+          maxlength="120"
+          placeholder="联系方式，可选"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="feedbackVisible = false">取消</el-button>
+        <el-button type="primary" :loading="feedbackLoading" @click="submitFeedback">提交</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  background: var(--app-bg);
+}
+
+.app-shell__sidebar {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 28px 22px;
+  border-right: 1px solid var(--app-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.94)),
+    var(--app-surface);
+  backdrop-filter: blur(18px);
+}
+
+.app-shell__brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+
+.app-shell__brand-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--app-primary), var(--app-primary-container));
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 12px 22px rgba(58, 56, 139, 0.22);
+}
+
+.app-shell__brand-copy {
+  min-width: 0;
+}
+
+.app-shell__brand-name {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.app-shell__brand-subtitle {
+  margin-top: 2px;
+  color: var(--app-text-muted);
+  font-size: 0.88rem;
+}
+
+.app-shell__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-shell__nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--app-text-weak);
+  text-align: left;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.app-shell__nav-item:hover {
+  background: rgba(58, 56, 139, 0.05);
+  border-color: rgba(58, 56, 139, 0.08);
+  color: var(--app-text);
+}
+
+.app-shell__nav-item.is-active {
+  background: rgba(58, 56, 139, 0.1);
+  border-color: rgba(58, 56, 139, 0.18);
+  color: var(--app-primary);
+}
+
+.app-shell__nav-icon {
+  flex: 0 0 auto;
+  font-size: 1rem;
+}
+
+.app-shell__nav-label {
+  min-width: 0;
+  font-weight: 600;
+}
+
+.app-shell__sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 20px;
+  color: var(--app-text-muted);
+  font-size: 0.88rem;
+}
+
+.app-shell__sidebar-footer.is-warning {
+  color: #8a5a12;
+}
+
+.app-shell__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-success);
+  box-shadow: 0 0 0 4px rgba(47, 158, 106, 0.12);
+}
+
+.app-shell__sidebar-footer.is-warning .app-shell__status-dot {
+  background: #e6a23c;
+  box-shadow: 0 0 0 4px rgba(230, 162, 60, 0.14);
+}
+
+.app-shell__sidebar-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.app-shell__main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell__topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 28px;
+  border-bottom: 1px solid rgba(216, 224, 235, 0.72);
+  background: rgba(244, 246, 251, 0.86);
+  backdrop-filter: blur(18px);
+}
+
+.app-shell__title-block {
+  min-width: 0;
+}
+
+.app-shell__eyebrow {
+  margin: 0 0 4px;
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.app-shell__title {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 1.4rem;
+  line-height: 1.2;
+}
+
+.app-shell__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.app-shell__content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 28px;
+}
+
+.feedback-form {
+  display: grid;
+  gap: 14px;
+}
+
+.app-shell__access-check {
+  width: min(100%, 760px);
+  margin: 36px auto;
+  padding: 24px;
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  background: var(--app-surface);
+}
+
+@media (max-width: 1024px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .app-shell__sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 12;
+    min-width: 0;
+    max-width: 100vw;
+    overflow-x: hidden;
+    overflow-y: auto;
+    gap: 16px;
+    padding: 18px 16px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--app-border);
+  }
+
+  .app-shell__nav {
+    min-width: 0;
+    max-width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .app-shell__nav-item {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .app-shell__sidebar-footer {
+    display: none;
+  }
+
+  .app-shell__topbar {
+    position: static;
+    align-items: flex-start;
+    padding: 22px 16px 18px;
+  }
+
+  .app-shell__content {
+    padding: 18px 16px 24px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell__topbar {
+    flex-direction: column;
+  }
+
+  .app-shell__actions {
+    width: 100%;
+  }
+
+  .app-shell__actions .el-button {
+    flex: 1;
+  }
+}
+</style>
