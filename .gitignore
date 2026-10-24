@@ -180,3 +180,4 @@ backend/mvn_result.txt
 
 # Others
 /.codex-tmp
+!/docs/来源与贡献说明.md

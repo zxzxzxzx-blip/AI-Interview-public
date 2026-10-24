@@ -4,6 +4,8 @@ InterWise 是一个面向技术面试训练的 AI 模拟面试平台。项目把
 
 后端基于 `Spring Boot 3 + MyBatis-Plus + LangChain4j + MySQL + Redis + Qdrant`，前端基于 `Vue 3 + Vite + Element Plus`。Docker 部署默认使用独立 `embedding-service` 加载 `intfloat/multilingual-e5-base`，通过 Qdrant 为面试追问提供可重建的语义索引。
 
+> **项目定位**：这是个人学习与功能实践的公开快照。项目功能、第三方来源和个人实际贡献分别记录；具体来源与贡献边界见[来源与贡献说明](docs/来源与贡献说明.md)。
+
 ## 项目亮点
 
 - 动态面试 RAG：不是传统知识库问答式“用户问题 -> 检索 -> 摘要回答”，而是在每一轮面试中把候选人回答、岗位、阶段、历史已问知识点和题库召回结果转成“下一问决策信号”。
@@ -56,43 +58,15 @@ InterWise 是一个面向技术面试训练的 AI 模拟面试平台。项目把
 
 ## 效果展示
 
-### 展示视频
+以下截图来自当前本地运行版本，展示实际工作台和大模型配置页面。截图中的 API Key 已做掩码处理；代码、依赖、题库与截图的来源和个人贡献请以仓库中的说明为准。
 
-https://github.com/user-attachments/assets/41830c7b-4c01-4444-b8d9-56a6971cf9a1
+### 工作台
 
-从登录、面试准备与模拟训练，到动态 RAG 追问、复盘和 AI Mentor，快速了解完整训练闭环。
+![工作台（当前运行版本）](image/展示图/dashboard-current.png)
 
-### 工作台与准备流程
+### 大模型配置
 
-![登录页](image/展示图/登录页.png)
-
-![工作台主页面](image/展示图/工作台主页面.png)
-
-![面试准备页](image/展示图/面试准备页.png)
-
-### 文字面试与视频面试
-
-![文字面试页](image/展示图/文字面试页.png)
-
-![视频面试页](image/展示图/视频面试页.png)
-
-### 简历画像、历史报告与 AI Mentor
-
-![简历画像页](image/展示图/简历画像页.png)
-
-![历史报告页](image/展示图/历史报告页.png)
-
-![AI Mentor 分析页](<image/展示图/ai mentor分析页.png>)
-
-### 岗位/题库维护
-
-![岗位/题库维护页](image/展示图/岗位，题库维护页.png)
-
-### 设置与大模型配置
-
-![设置页](image/展示图/设置页.png)
-
-![大模型配置页](image/展示图/llm配置界面.png)
+![大模型配置（当前运行版本）](image/展示图/llm-config-current.png)
 
 ## 系统架构
 
@@ -336,3 +310,7 @@ python -m unittest discover -s tests
 
 欢迎为本项目贡献代码、文档或提出改进建议！你可以通过 Issue 或 Pull Request 参与项目建设。
 详见 [贡献指南](docs/贡献指南.md)
+
+## 来源与贡献说明
+
+详细来源边界、提交历史说明和个人贡献清单见[来源与贡献说明](docs/来源与贡献说明.md)。
